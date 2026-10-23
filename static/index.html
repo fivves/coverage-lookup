@@ -115,6 +115,19 @@
   .strong { color: var(--strong); } .good { color: var(--good); } .fair { color: var(--fair); }
   .weak { color: var(--weak); } .very { color: var(--vweak); } .none { color: var(--none); }
 
+  .card-links { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #242322;
+                display: flex; flex-wrap: wrap; gap: 8px; }
+  .card-links a {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 10px; border: 1px solid var(--border); border-radius: 2px;
+    color: var(--muted); text-decoration: none; font-size: 11px;
+    letter-spacing: .5px; line-height: 1.2; transition: all .12s ease;
+  }
+  .card-links a:hover {
+    color: var(--accent); border-color: var(--accent);
+    background: rgba(0,217,146,0.06); box-shadow: 0 0 10px rgba(0,217,146,0.18);
+  }
+  .card-links a .arrow { font-size: 10px; opacity: .75; }
   .foot { margin-top: 24px; color: var(--muted); font-size: 11.5px; line-height: 1.65; }
   .foot a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(0,217,146,0.35); }
   .foot a:hover { border-color: var(--accent); }
@@ -210,6 +223,21 @@ function render(j, ms) {
     j.location.lat.toFixed(5) + ', ' + j.location.lon.toFixed(5) + '  ·  geocode ' + esc(j.location.source) +
     '  ·  filing ' + esc(j.vintage) + '</small></div>';
 
+  // CellMapper keys networks by PLMN, not by brand: Verizon is 311-480 (310-480 is Choice
+  // Wireless in its provider list), AT&T 310-410, T-Mobile 310-260. Verified against the
+  // provider label CellMapper prints for each pair.
+  const PLMN = {
+    'T-Mobile': { mcc: 310, mnc: 260 },
+    'AT&T': { mcc: 310, mnc: 410 },
+    'Verizon': { mcc: 311, mnc: 480 },
+  };
+  const cellmapperUrl = carrier => {
+    const net = PLMN[carrier] || PLMN['T-Mobile'];
+    return 'https://www.cellmapper.net/map?MCC=' + net.mcc + '&MNC=' + net.mnc + '&type=LTE' +
+      '&latitude=' + j.location.lat.toFixed(6) + '&longitude=' + j.location.lon.toFixed(6) +
+      '&zoom=15&showTowers=true&showIcons=true&showTowerLabels=true&clusterEnabled=true&tilesEnabled=true';
+  };
+
   const ranked = j.carriers.filter(c => c.best_dbm !== null);
   const none = j.carriers.filter(c => c.best_dbm === null);
 
@@ -228,7 +256,11 @@ function render(j, ms) {
       c.rows.map(r => '<tr><td>' + esc(r.tech) + '</td><td>' + esc(r.env) + '</td>' +
         '<td class="d ' + cls(r.label) + '">' + (r.dbm ?? '—') + ' dBm</td>' +
         '<td class="d">' + esc(r.down_mbps) + '/' + esc(r.up_mbps) + ' Mbps</td></tr>').join('') +
-      '</table></div>';
+      '</table>' +
+      '<div class="card-links">' +
+        '<a href="' + esc(j.fcc_url) + '" target="_blank" rel="noopener">fcc filing <span class="arrow">&#8599;</span></a>' +
+        '<a href="' + esc(cellmapperUrl(c.carrier)) + '" target="_blank" rel="noopener">cellmapper <span class="arrow">&#8599;</span></a>' +
+      '</div></div>';
   });
 
   if (none.length) {
@@ -244,24 +276,9 @@ function render(j, ms) {
   // CellMapper reads latitude/longitude/zoom/MCC/MNC from the query string and calls
   // setCenter on them (verified in its own bundle); with latitude missing or 0 it jumps to
   // the visitor's current location instead, so all of these params have to be present.
-  // CellMapper keys networks by PLMN, not by brand: Verizon is 311-480 (310-480 is Choice
-  // Wireless in its provider list), AT&T 310-410, T-Mobile 310-260. Verified against the
-  // provider label CellMapper prints for each pair.
-  const PLMN = {
-    'T-Mobile': { mcc: 310, mnc: 260 },
-    'AT&T': { mcc: 310, mnc: 410 },
-    'Verizon': { mcc: 311, mnc: 480 },
-  };
-  const leader = ranked[0];
-  const net = (leader && PLMN[leader.carrier]) || PLMN['T-Mobile'];
-  const cmUrl = 'https://www.cellmapper.net/map?MCC=' + net.mcc + '&MNC=' + net.mnc + '&type=LTE' +
-    '&latitude=' + j.location.lat.toFixed(6) + '&longitude=' + j.location.lon.toFixed(6) +
-    '&zoom=15&showTowers=true&showIcons=true&showTowerLabels=true&clusterEnabled=true&tilesEnabled=true';
-
-  html += '<div class="foot"><a href="' + esc(j.fcc_url) + '" target="_blank" rel="noopener">open the fcc page for this point</a>' +
-    '  ·  <a href="' + esc(cmUrl) + '" target="_blank" rel="noopener">cellmapper: ' +
-    (leader ? esc(leader.carrier) + ' towers here' : 'towers here') + '</a>' +
-    (j.fetched_at ? '  ·  fetched ' + esc(j.fetched_at) : '') + '</div>';
+  if (j.fetched_at) {
+    html += '<div class="foot">fetched ' + esc(j.fetched_at) + '</div>';
+  }
 
   html += '<button class="copy" onclick="copyLine()">copy ticket line</button>';
   out.innerHTML = html;
