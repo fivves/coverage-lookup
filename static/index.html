@@ -115,6 +115,18 @@
   .strong { color: var(--strong); } .good { color: var(--good); } .fair { color: var(--fair); }
   .weak { color: var(--weak); } .very { color: var(--vweak); } .none { color: var(--none); }
 
+  .bands { margin-top: 11px; padding-top: 9px; border-top: 1px dashed #242322; }
+  .band-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-bottom: 5px; }
+  .band-label { color: var(--muted); font-size: 10px; letter-spacing: .7px;
+                text-transform: uppercase; width: 24px; flex: 0 0 24px; }
+  .band-row a {
+    color: var(--text); text-decoration: none; font-size: 11px;
+    padding: 2px 6px; border: 1px solid #2a2827; border-radius: 2px;
+    font-variant-numeric: tabular-nums; transition: all .1s ease;
+  }
+  .band-row a:hover { color: var(--accent); border-color: var(--accent);
+                      background: rgba(0,217,146,0.06); }
+  .band-note { color: #6b6873; font-size: 10.5px; margin-top: 2px; }
   .card-links { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #242322;
                 display: flex; flex-wrap: wrap; gap: 8px; }
   .card-links a {
@@ -231,9 +243,26 @@ function render(j, ms) {
     'AT&T': { mcc: 310, mnc: 410 },
     'Verizon': { mcc: 311, mnc: 480 },
   };
+  // Each carrier's national band portfolio. These are the bands the carrier deploys
+  // across the US, NOT a claim about what is on a tower near this address, so the row
+  // is labelled as such in the UI. Clicking one opens CellMapper filtered to that band.
+  const BANDS = {
+    'Verizon': { lte: [13, 66, 2, 5, 48], nr: [77, 260, 261] },
+    'AT&T': { lte: [12, 14, 2, 66, 46], nr: [77, 5, 260] },
+    'T-Mobile': { lte: [71, 12, 2, 66, 41], nr: [41, 71, 25, 261] },
+  };
+
   const cellmapperUrl = carrier => {
     const net = PLMN[carrier] || PLMN['T-Mobile'];
     return 'https://www.cellmapper.net/map?MCC=' + net.mcc + '&MNC=' + net.mnc + '&type=LTE' +
+      '&latitude=' + j.location.lat.toFixed(6) + '&longitude=' + j.location.lon.toFixed(6) +
+      '&zoom=15&showTowers=true&showIcons=true&showTowerLabels=true&clusterEnabled=true&tilesEnabled=true';
+  };
+
+  const bandUrl = (carrier, rat, band) => {
+    const net = PLMN[carrier] || PLMN['T-Mobile'];
+    return 'https://www.cellmapper.net/map?MCC=' + net.mcc + '&MNC=' + net.mnc +
+      '&type=' + rat + '&showBand=' + band +
       '&latitude=' + j.location.lat.toFixed(6) + '&longitude=' + j.location.lon.toFixed(6) +
       '&zoom=15&showTowers=true&showIcons=true&showTowerLabels=true&clusterEnabled=true&tilesEnabled=true';
   };
@@ -257,6 +286,14 @@ function render(j, ms) {
         '<td class="d ' + cls(r.label) + '">' + (r.dbm ?? '—') + ' dBm</td>' +
         '<td class="d">' + esc(r.down_mbps) + '/' + esc(r.up_mbps) + ' Mbps</td></tr>').join('') +
       '</table>' +
+      (BANDS[c.carrier] ? (() => {
+        const b = BANDS[c.carrier];
+        const row = (label, rat, list) => '<div class="band-row"><span class="band-label">' + label + '</span>' +
+          list.map(n => '<a href="' + esc(bandUrl(c.carrier, rat, n)) + '" target="_blank" rel="noopener">' +
+            (rat === 'NR' ? 'n' : 'B') + n + '</a>').join('') + '</div>';
+        return '<div class="bands">' + row('lte', 'LTE', b.lte) + row('5g', 'NR', b.nr) +
+          '<div class="band-note">national bands this carrier deploys, not verified at this address</div></div>';
+      })() : '') +
       '<div class="card-links">' +
         '<a href="' + esc(j.fcc_url) + '" target="_blank" rel="noopener">fcc filing <span class="arrow">&#8599;</span></a>' +
         '<a href="' + esc(cellmapperUrl(c.carrier)) + '" target="_blank" rel="noopener">cellmapper <span class="arrow">&#8599;</span></a>' +
