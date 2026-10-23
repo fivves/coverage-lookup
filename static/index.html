@@ -241,7 +241,19 @@ function render(j, ms) {
       j.alternatives.map(a => esc(a.matched)).join('  ·  ') + '</div>';
   }
 
+  // CellMapper reads latitude/longitude/zoom/MCC/MNC from the query string and calls
+  // setCenter on them (verified in its own bundle); with latitude missing or 0 it jumps to
+  // the visitor's current location instead, so all of these params have to be present.
+  const MNC = { 'T-Mobile': 260, 'AT&T': 410, 'Verizon': 480 };
+  const leader = ranked[0];
+  const mnc = leader ? (MNC[leader.carrier] || 260) : 260;
+  const cmUrl = 'https://www.cellmapper.net/map?MCC=310&MNC=' + mnc + '&type=LTE' +
+    '&latitude=' + j.location.lat.toFixed(6) + '&longitude=' + j.location.lon.toFixed(6) +
+    '&zoom=15&showTowers=true&showIcons=true&showTowerLabels=true&clusterEnabled=true&tilesEnabled=true';
+
   html += '<div class="foot"><a href="' + esc(j.fcc_url) + '" target="_blank" rel="noopener">open the fcc page for this point</a>' +
+    '  ·  <a href="' + esc(cmUrl) + '" target="_blank" rel="noopener">cellmapper: ' +
+    (leader ? esc(leader.carrier) + ' towers here' : 'towers here') + '</a>' +
     (j.fetched_at ? '  ·  fetched ' + esc(j.fetched_at) : '') + '</div>';
 
   html += '<button class="copy" onclick="copyLine()">copy ticket line</button>';
