@@ -244,10 +244,17 @@ function render(j, ms) {
   // CellMapper reads latitude/longitude/zoom/MCC/MNC from the query string and calls
   // setCenter on them (verified in its own bundle); with latitude missing or 0 it jumps to
   // the visitor's current location instead, so all of these params have to be present.
-  const MNC = { 'T-Mobile': 260, 'AT&T': 410, 'Verizon': 480 };
+  // CellMapper keys networks by PLMN, not by brand: Verizon is 311-480 (310-480 is Choice
+  // Wireless in its provider list), AT&T 310-410, T-Mobile 310-260. Verified against the
+  // provider label CellMapper prints for each pair.
+  const PLMN = {
+    'T-Mobile': { mcc: 310, mnc: 260 },
+    'AT&T': { mcc: 310, mnc: 410 },
+    'Verizon': { mcc: 311, mnc: 480 },
+  };
   const leader = ranked[0];
-  const mnc = leader ? (MNC[leader.carrier] || 260) : 260;
-  const cmUrl = 'https://www.cellmapper.net/map?MCC=310&MNC=' + mnc + '&type=LTE' +
+  const net = (leader && PLMN[leader.carrier]) || PLMN['T-Mobile'];
+  const cmUrl = 'https://www.cellmapper.net/map?MCC=' + net.mcc + '&MNC=' + net.mnc + '&type=LTE' +
     '&latitude=' + j.location.lat.toFixed(6) + '&longitude=' + j.location.lon.toFixed(6) +
     '&zoom=15&showTowers=true&showIcons=true&showTowerLabels=true&clusterEnabled=true&tilesEnabled=true';
 
