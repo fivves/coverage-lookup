@@ -1,0 +1,13 @@
+[Unit]
+Description=Coverage Lookup (FCC cell coverage by address)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/coverage-lookup
+ExecStart=%h/.hermes/hermes-agent/venv/bin/python %h/Projects/coverage-lookup/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

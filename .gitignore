@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+chrome-profile/
+*.bak
+*.bak-*
+static/config.js
