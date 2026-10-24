@@ -81,6 +81,24 @@
   button:hover:not(:disabled) { background: var(--accent); color: var(--bg); box-shadow: 0 0 12px rgba(0,217,146,0.35); }
   button:disabled { opacity: .45; cursor: default; }
 
+  .field-wrap { flex: 1; position: relative; }
+  .suggest {
+    position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 20;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.6); overflow: hidden; max-height: 46vh; overflow-y: auto;
+  }
+  .suggest[hidden] { display: none; }
+  .suggest-item {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 8px 12px; font-size: 12px; color: var(--text);
+    cursor: pointer; border-bottom: 1px solid #1b1a19;
+  }
+  .suggest-item:last-child { border-bottom: 0; }
+  .suggest-item .src { margin-left: auto; color: #6b6873; font-size: 10px; letter-spacing: .6px; }
+  .suggest-item.active { background: rgba(0,217,146,0.10); color: var(--accent); }
+  .suggest-item.active .src { color: var(--accent); }
+  .suggest-empty { padding: 8px 12px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+  .suggest-empty:hover { color: var(--accent); }
   .examples { color: var(--muted); font-size: 11.5px; margin: 10px 0 0; }
   .examples b { color: var(--text); font-weight: 400; border-bottom: 1px dotted var(--border); cursor: pointer; }
   .examples b:hover { color: var(--accent); border-color: var(--accent); }
@@ -148,11 +166,15 @@
   <div class="sub">// FCC carrier filings at one location: technology, predicted minimum signal, minimum speeds</div>
 
   <form id="f">
-    <label class="field">
-      <span class="sig">&gt;</span>
-      <input id="q" type="text" autocomplete="off" autofocus
-             placeholder="street address or business name">
-    </label>
+    <div class="field-wrap">
+      <label class="field">
+        <span class="sig">&gt;</span>
+        <input id="q" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" autofocus
+               placeholder="street address or business name"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest">
+      </label>
+      <div id="suggest" class="suggest" role="listbox" hidden></div>
+    </div>
     <button id="go" type="submit">run</button>
   </form>
   <p class="examples">try <b id="ex1">350 5th Ave, New York, NY 10118</b> &nbsp;·&nbsp; <b id="ex2">Costco Camarillo</b></p>
@@ -193,8 +215,104 @@ document.querySelectorAll('.examples b').forEach(b => b.onclick = () => { q.valu
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+// ---- address / business typeahead -------------------------------------------
+const box = document.getElementById('suggest');
+let items = [], active = -1, debounce = null, inflight = null;
+
+function closeSuggest() {
+  box.hidden = true;
+  box.innerHTML = '';
+  items = [];
+  active = -1;
+  q.setAttribute('aria-expanded', 'false');
+}
+
+function paint() {
+  box.innerHTML = items.map((it, i) =>
+    '<div class="suggest-item' + (i === active ? ' active' : '') + '" role="option" data-i="' + i + '">' +
+      '<span>' + esc(it.label) + '</span>' +
+      '<span class="src">' + (it.source === 'fcc' ? 'fcc' : 'osm') + '</span>' +
+    '</div>').join('');
+  box.hidden = items.length === 0;
+  q.setAttribute('aria-expanded', items.length ? 'true' : 'false');
+  const el = box.querySelector('.suggest-item.active');
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+}
+
+function choose(i) {
+  const it = items[i];
+  if (!it) return;
+  q.value = it.label;
+  closeSuggest();
+  f.requestSubmit();
+}
+
+async function ask(text) {
+  if (inflight) inflight.abort();
+  inflight = new AbortController();
+  try {
+    const r = await fetch('/api/suggest?q=' + encodeURIComponent(text), { signal: inflight.signal });
+    const j = await r.json();
+    if (q.value.trim() !== text) return;          // stale: the user kept typing
+    items = j.suggestions || [];
+    active = -1;
+    if (!items.length && text.length >= 5) {
+      box.innerHTML = '<div class="suggest-empty">no matches for "' + esc(text) +
+        '" &mdash; press run to search it anyway</div>';
+      box.hidden = false;
+      q.setAttribute('aria-expanded', 'true');
+      return;
+    }
+    paint();
+  } catch (err) {
+    if (err.name !== 'AbortError') closeSuggest();
+  }
+}
+
+q.addEventListener('input', () => {
+  const text = q.value.trim();
+  clearTimeout(debounce);
+  if (text.length < 3) { closeSuggest(); return; }
+  debounce = setTimeout(() => ask(text), 280);
+});
+
+q.addEventListener('keydown', e => {
+  if (box.hidden || !items.length) {
+    if (e.key === 'Escape') closeSuggest();
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    active = (active + 1) % items.length;
+    paint();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    active = (active - 1 + items.length) % items.length;
+    paint();
+  } else if (e.key === 'Enter') {
+    if (active >= 0) { e.preventDefault(); choose(active); }
+    else closeSuggest();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeSuggest();
+  }
+});
+
+// keep focus in the box while clicking a suggestion
+box.addEventListener('mousedown', e => e.preventDefault());
+box.addEventListener('click', e => {
+  const row = e.target.closest('.suggest-item');
+  if (row) choose(Number(row.dataset.i));
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.field-wrap')) closeSuggest();
+});
+
 f.addEventListener('submit', async e => {
   e.preventDefault();
+  clearTimeout(debounce);
+  closeSuggest();
   const val = q.value.trim();
   if (!val) return;
   go.disabled = true;

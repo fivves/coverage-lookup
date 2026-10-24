@@ -54,6 +54,11 @@ def rate_ok(ip: str) -> bool:
         _hits[ip] = stamps
     return True
 
+SUGGEST_TTL = 900
+_suggest_cache: dict[str, tuple[float, list[dict]]] = {}
+_SUGGEST_LIMIT = 1200  # per IP per hour; a typeahead fires more often than a lookup
+_suggest_hits: dict[str, list[float]] = {}
+
 client: FccClient | None = None
 client_lock = threading.Lock()
 
@@ -133,6 +138,138 @@ def resolve(query: str) -> tuple[dict | None, list[dict]]:
 
 
 # ------------------------------------------------------------------ FCC layer
+
+
+def suggest_ok(ip: str) -> bool:
+    now = time.time()
+    with _hits_lock:
+        stamps = [t for t in _suggest_hits.get(ip, []) if now - t < RATE_WINDOW]
+        if len(stamps) >= _SUGGEST_LIMIT:
+            _suggest_hits[ip] = stamps
+            return False
+        stamps.append(now)
+        _suggest_hits[ip] = stamps
+    return True
+
+
+def photon_suggest(query: str, limit: int = 8) -> list[dict]:
+    """OpenStreetMap-backed typeahead (Photon): businesses, landmarks, cities, ZIPs.
+
+    The FCC fabric only holds street addresses, so a caller who types a company name gets
+    nothing from it. Photon fills that gap. Results are filtered to the US and labelled the
+    way the lookup expects to receive them.
+    """
+    q = urllib.parse.urlencode({"q": query, "limit": limit})
+    try:
+        data = _get_json(f"https://photon.komoot.io/api/?{q}")
+    except Exception:
+        return []
+    out = []
+    for feat in data.get("features") or []:
+        props = feat.get("properties") or {}
+        if props.get("countrycode") and props["countrycode"] != "US":
+            continue
+        parts = []
+        name = props.get("name")
+        street = " ".join(str(x) for x in [props.get("housenumber"), props.get("street")] if x)
+        if name and name not in (street or ""):
+            parts.append(name)
+        if street:
+            parts.append(street)
+        for key in ("city", "state", "postcode"):
+            if props.get(key):
+                parts.append(props[key])
+        label = ", ".join(parts)
+        if label:
+            out.append({"label": label, "source": "osm"})
+    return out[:limit]
+
+
+_nominatim_last = 0.0
+
+
+def nominatim_suggest(query: str, limit: int = 6) -> list[dict]:
+    """Slower OSM geocoder, used only when Photon comes back thin.
+
+    Nominatim's usage policy forbids aggressive autocomplete, so this is a fallback behind
+    a 1 req/sec throttle and the same 15 minute cache as everything else.
+    """
+    global _nominatim_last
+    with _hits_lock:
+        wait = 1.1 - (time.time() - _nominatim_last)
+        if wait > 0:
+            time.sleep(wait)
+        _nominatim_last = time.time()
+    q = urllib.parse.urlencode(
+        {"q": query, "format": "jsonv2", "limit": limit, "countrycodes": "us", "addressdetails": 1}
+    )
+    try:
+        data = _get_json(f"https://nominatim.openstreetmap.org/search?{q}")
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for row in data:
+        label = row.get("display_name") or ""
+        if not label:
+            continue
+        parts = [p.strip() for p in label.split(",")]
+        # drop the trailing ", United States"
+        if parts and parts[-1].lower() in ("united states", "usa", "us"):
+            parts = parts[:-1]
+        out.append({"label": ", ".join(parts[:5]), "source": "osm"})
+    return out
+
+
+def suggest(query: str) -> list[dict]:
+    key = query.strip().lower()
+    with _cache_lock:
+        hit = _suggest_cache.get(key)
+        if hit and time.time() - hit[0] < SUGGEST_TTL:
+            return hit[1]
+
+    results: list[dict] = []
+    address_like = key[:1].isdigit()
+    house_number = key.split()[0] if address_like else ""
+    # A leading digit means a street address, where the FCC's own fabric is authoritative.
+    if address_like and len(key.split()) > 1:
+        try:
+            results = get_client().address_suggest(query)
+        except FccError:
+            results = []
+    wants_fcc = address_like and len(key.split()) > 1  # a bare ZIP is not a street address
+    if wants_fcc and not results:
+        results = []
+    elif not wants_fcc:
+        results = []
+
+    if len(results) < 4:
+        osm = photon_suggest(query)
+        if len(osm) < 2:
+            osm += nominatim_suggest(query)
+        for cand in osm:
+            # For an address query keep only candidates that contain every token typed, so
+            # "240 frenchys cove" cannot return coves in four other states. Showing nothing
+            # is more honest than showing the wrong place.
+            if address_like and not all(tok in cand["label"].lower() for tok in key.split()):
+                continue
+            results.append(cand)
+
+    seen, merged = set(), []
+    for item in results:
+        label = item["label"].strip()
+        norm = re.sub(r"[^a-z0-9]+", "", label.lower())  # collapses punctuation/comma variants
+        if not label or norm in seen:
+            continue
+        seen.add(norm)
+        merged.append({"label": label, "source": item["source"]})
+        if len(merged) >= 7:
+            break
+
+    with _cache_lock:
+        _suggest_cache[key] = (time.time(), merged)
+    return merged
 
 
 def get_client() -> FccClient:
@@ -244,6 +381,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
         if parsed.path == "/healthz":
             self._json({"ok": True, "time": time.strftime("%Y-%m-%dT%H:%M:%S")})
+            return
+        if parsed.path == "/api/suggest":
+            qs = urllib.parse.parse_qs(parsed.query)
+            q = (qs.get("q") or [""])[0].strip()
+            ip = self.headers.get("CF-Connecting-IP") or self.client_address[0]
+            if not suggest_ok(ip):
+                self._json({"ok": True, "suggestions": []})  # never break typing over a limit
+                return
+            if len(q) < 3:
+                self._json({"ok": True, "suggestions": []})
+                return
+            try:
+                self._json({"ok": True, "suggestions": suggest(q)})
+            except Exception:
+                self._json({"ok": True, "suggestions": []})
             return
         if parsed.path == "/api/lookup":
             qs = urllib.parse.parse_qs(parsed.query)

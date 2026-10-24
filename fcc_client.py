@@ -262,6 +262,45 @@ class FccClient:
         self._filing_at = time.time()
         return self._filing
 
+    def address_suggest(self, query: str) -> list[dict]:
+        """Address typeahead from the FCC's own fabric, the same one its search box uses.
+
+        GET /nbm/map/api/fabric/address/<filing_uuid>/<query> returns address records
+        (address_primary, city, state, zip_code, addr_full, location_id) but no coordinates,
+        which is fine here: the suggestion only has to hand a clean address string back to
+        the normal lookup path, which geocodes it properly.
+        """
+        if not self._alive():
+            self.stop()
+            self.start()
+        import urllib.parse as _up
+
+        with self._lock:
+            label, uuid = self.filing()
+            q = _up.quote(query, safe="")
+            expr = (
+                "(async()=>{const r=await fetch('%s/nbm/map/api/fabric/address/%s/%s');"
+                "const t=await r.text();return JSON.stringify({status:r.status,body:t})})()"
+                % (SITE, uuid, q)
+            )
+            try:
+                raw = self._eval(expr)
+            except Exception:
+                return []
+        try:
+            envelope = json.loads(raw)
+            body = json.loads(envelope.get("body") or "{}")
+        except (TypeError, ValueError):
+            return []
+        out = []
+        for row in (body.get("data") or [])[:8]:
+            full = row.get("addr_full") or ", ".join(
+                p for p in [row.get("address_primary"), row.get("city"), row.get("state")] if p
+            )
+            if full:
+                out.append({"label": full, "source": "fcc"})
+        return out
+
     def mobile_detail(self, lat: float, lon: float) -> dict:
         if not self._alive():
             self.stop()
